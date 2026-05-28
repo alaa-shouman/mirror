@@ -1,9 +1,9 @@
-import { Canvas, useFrame, useLoader } from '@react-three/fiber'
-import { Suspense, useEffect, useMemo, useRef } from 'react'
+import { Canvas, useFrame, useLoader, useThree } from '@react-three/fiber'
+import { Component, Suspense, useEffect, useMemo, useRef } from 'react'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader'
 import { clone as cloneSkinnedScene } from 'three/examples/jsm/utils/SkeletonUtils.js'
 import * as THREE from 'three'
-import { computeBodyRigFrame } from '../lib/ar/bodyRig'
+import { computeBodyRigFrame, updateBodyRigCameraAspect } from '../lib/ar/bodyRig'
 import { buildGarmentAdapter, createPendingGarmentAdapter } from '../lib/ar/garmentAdapter'
 import {
   applyFallbackStaticDeformation,
@@ -316,6 +316,7 @@ function GarmentModel({
   rotOffset,
   scaleMult,
   fitProfile,
+  riggedFit,
   debug,
   onAssetState,
 }) {
@@ -412,6 +413,7 @@ function GarmentModel({
     rotOffset,
     scaleMult,
     fitProfile,
+    riggedFit,
     debug,
     onAssetState,
   })
@@ -432,6 +434,48 @@ function GarmentModel({
   )
 }
 
+/** Keeps bodyRig.js WORLD_WIDTH in sync with the actual Three.js camera aspect. */
+function CameraAspectSync() {
+  const { camera } = useThree()
+  useEffect(() => {
+    updateBodyRigCameraAspect(camera.aspect)
+  }, [camera.aspect])
+  return null
+}
+
+class GarmentErrorBoundary extends Component {
+  constructor(props) {
+    super(props)
+    this.state = { error: null }
+  }
+
+  static getDerivedStateFromError(error) {
+    return { error }
+  }
+
+  componentDidCatch(error) {
+    console.error('[GarmentRenderer] Canvas error:', error)
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{
+          position: 'absolute', inset: 0,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          background: 'rgba(0,0,0,0.55)', color: '#f87171',
+          fontSize: 13, fontFamily: 'monospace', textAlign: 'center', padding: 16,
+        }}>
+          Garment failed to load
+          <br />
+          <span style={{ color: '#888', fontSize: 11 }}>{String(this.state.error?.message || this.state.error)}</span>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
 function GarmentRenderer({
   modelUrl,
   landmarks,
@@ -444,6 +488,7 @@ function GarmentRenderer({
   onAssetState,
 }) {
   return (
+    <GarmentErrorBoundary>
     <Canvas
       style={{
         position: 'absolute',
@@ -455,6 +500,7 @@ function GarmentRenderer({
       camera={{ position: [0, 0, 3], fov: 55 }}
       gl={{ alpha: true, antialias: true }}
     >
+      <CameraAspectSync />
       <ambientLight intensity={0.55} />
       <directionalLight position={[2, 4, 2]} intensity={1.15} castShadow />
       <directionalLight position={[-2, 2, -2]} intensity={0.35} />
@@ -496,6 +542,7 @@ function GarmentRenderer({
         )}
       </Suspense>
     </Canvas>
+    </GarmentErrorBoundary>
   )
 }
 

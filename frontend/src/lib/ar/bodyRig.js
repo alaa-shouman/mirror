@@ -1,5 +1,25 @@
 import * as THREE from 'three'
 
+// ─── Camera projection constants ────────────────────────────────────────────
+// The AR viewport is forced to 4:3 in CSS; the Three.js camera sits at z=3
+// with a 55° vertical FOV.  Landmarks must map to exactly the same world
+// positions as the corresponding pixels in the camera feed.
+//
+// visibleHeight = 2 * camZ * tan(vFov/2) = 2 * 3 * tan(27.5°) ≈ 3.124
+// visibleWidth  = visibleHeight * aspect  = 3.124 * (4/3)       ≈ 4.165
+//
+// These are exported so GarmentRenderer can override them when the Three.js
+// canvas reports a different aspect via useThree().camera.aspect.
+export const CAMERA_Z = 3
+export const CAMERA_VFOV_DEG = 55
+export let WORLD_HEIGHT = 2 * CAMERA_Z * Math.tan((CAMERA_VFOV_DEG * Math.PI) / 360) // ≈ 3.124
+export let WORLD_WIDTH = WORLD_HEIGHT * (4 / 3) // ≈ 4.165
+
+/** Call this from GarmentRenderer once the R3F camera reports its actual aspect. */
+export function updateBodyRigCameraAspect(aspect) {
+  WORLD_WIDTH = WORLD_HEIGHT * aspect
+}
+
 export const BODY_RIG_LANDMARKS = {
   LEFT_SHOULDER: 11,
   RIGHT_SHOULDER: 12,
@@ -48,8 +68,8 @@ function toPlainVector(vector) {
 
 export function landmarkToWorldVector(landmark) {
   return new THREE.Vector3(
-    (landmark.x - 0.5) * 4,
-    -(landmark.y - 0.5) * 3,
+    (landmark.x - 0.5) * WORLD_WIDTH,
+    -(landmark.y - 0.5) * WORLD_HEIGHT,
     landmark.z * -1.5
   )
 }
@@ -220,9 +240,12 @@ export function computeBodyRigFrame(landmarks, options = {}) {
       4
     : (((leftShoulder.visibility ?? 0) + (rightShoulder.visibility ?? 0)) / 2) * 0.78
 
-  const widthScaleFactor = hipsVisible ? 1.3 : 1.6
-  const heightScaleFactor = hipsVisible ? 1.15 : 1.24
-  const depthScaleFactor = hipsVisible ? 0.65 : 0.82
+  // Width: shirt shoulders sit just beyond the shoulder joints → 1.22×
+  // Height: shirt hem ~ hip level, collar ~ shoulder level → 1.08× torso
+  // Depth: proportional to shoulder width for a plausible 3-D volume
+  const widthScaleFactor = hipsVisible ? 1.22 : 1.45
+  const heightScaleFactor = hipsVisible ? 1.08 : 1.18
+  const depthScaleFactor = hipsVisible ? 0.58 : 0.72
 
   return {
     contractVersion: 'body-rig-frame/v1',

@@ -626,7 +626,12 @@ body {
 }
 
 .ar-viewport {
-  flex: 1;
+  /* Lock to 4:3 so the Three.js canvas and camera feed always share the same
+     aspect ratio — required for accurate garment-to-body alignment. */
+  aspect-ratio: 4 / 3;
+  width: 100%;
+  max-height: 65vh;
+  align-self: center;
   position: relative;
   background: #000;
   overflow: hidden;

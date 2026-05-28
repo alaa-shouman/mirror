@@ -3,7 +3,9 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 function defaultWebSocketUrl() {
   if (typeof window === 'undefined') return 'ws://127.0.0.1:8000/ws/vision'
   const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
-  const host = window.location.hostname === 'localhost' ? '127.0.0.1' : window.location.hostname
+  const hostname = window.location.hostname
+  // Empty hostname occurs in Electron prod (file:// protocol); fall back to loopback
+  const host = !hostname || hostname === 'localhost' ? '127.0.0.1' : hostname
   return `${protocol}://${host}:8000/ws/vision`
 }
 
@@ -11,6 +13,10 @@ const WS_URL = import.meta.env.VITE_WS_URL || defaultWebSocketUrl()
 const DEMO_VISION_ENABLED = import.meta.env.VITE_DEMO_VISION !== 'off'
 const FRAME_WIDTH = 640
 const FRAME_HEIGHT = 480
+
+// EWA landmark smoothing factor — higher = more responsive, lower = smoother.
+// 0.35 gives ~1-frame lag at 30fps while strongly damping per-frame noise.
+const LANDMARK_SMOOTH_ALPHA = 0.35
 
 function createLandmark(xPosition, yPosition, zPosition = 0, visibility = 0.96) {
   return {
@@ -116,20 +122,41 @@ function demoMeasurements() {
   }
 }
 
+/**
+ * Exponentially weighted average smoothing for MediaPipe landmarks.
+ * Reduces per-frame jitter while keeping <1 frame tracking lag at 30fps.
+ */
+function smoothLandmarks(incoming, previous, alpha) {
+  if (!previous || previous.length !== incoming.length) return incoming
+  return incoming.map((lm, i) => {
+    const p = previous[i]
+    if (!p) return lm
+    return {
+      x: p.x + alpha * (lm.x - p.x),
+      y: p.y + alpha * (lm.y - p.y),
+      z: p.z + alpha * (lm.z - p.z),
+      visibility: lm.visibility, // don't smooth visibility — needed for gating
+    }
+  })
+}
+
 export function useWebSocket() {
-  const [landmarks, setLandmarks]           = useState([])
-  const [cameraFrame, setCameraFrame]       = useState(null)
-  const [segMask, setSegMask]               = useState(null)
-  const [measurements, setMeasurements]     = useState(null)
-  const [recommendedSize, setRecommendedSize] = useState(null)
-  const [connected, setConnected]           = useState(false)
-  const [source, setSource]                 = useState('disconnected')
-  const wsRef = useRef(null)
-  const reconnectTimer = useRef(null)
-  const noFrameTimer = useRef(null)
-  const demoTimer = useRef(null)
-  const manualCloseRef = useRef(false)
-  const frameCountRef = useRef(0)
+  const [landmarks, setLandmarks]               = useState([])
+  const [cameraFrame, setCameraFrame]           = useState(null)
+  const [segMask, setSegMask]                   = useState(null)
+  const [measurements, setMeasurements]         = useState(null)
+  const [recommendedSize, setRecommendedSize]   = useState(null)
+  const [connected, setConnected]               = useState(false)
+  const [source, setSource]                     = useState('disconnected')
+  const [cameraError, setCameraError]           = useState(null)
+
+  const wsRef               = useRef(null)
+  const reconnectTimer      = useRef(null)
+  const noFrameTimer        = useRef(null)
+  const demoTimer           = useRef(null)
+  const manualCloseRef      = useRef(false)
+  const frameCountRef       = useRef(0)
+  const smoothedLandmarks   = useRef([])
 
   const stopDemo = useCallback(() => {
     if (demoTimer.current) {
@@ -145,7 +172,9 @@ export function useWebSocket() {
       const timestamp = Date.now()
       setConnected(true)
       setSource('demo')
-      setLandmarks(createDemoLandmarks(timestamp))
+      const demoLm = createDemoLandmarks(timestamp)
+      smoothedLandmarks.current = demoLm
+      setLandmarks(demoLm)
       setCameraFrame(createDemoFrame(timestamp))
       setSegMask(null)
       setMeasurements(demoMeasurements())
@@ -166,6 +195,7 @@ export function useWebSocket() {
 
     ws.onopen = () => {
       stopDemo()
+      setCameraError(null)
       console.log('[WS] Connected to backend')
       setConnected(true)
       setSource('live')
@@ -185,17 +215,34 @@ export function useWebSocket() {
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data)
-        frameCountRef.current += 1
 
-        // Throttle: only process every 3rd frame (~10 fps) to prevent GPU overload
-        // Landmarks update every frame for smooth tracking, but heavy canvas ops throttled
-        if (frameCountRef.current % 3 !== 0) {
-          // Always update landmarks (lightweight, needed for smooth tracking)
-          if (data.landmarks) setLandmarks(data.landmarks)
+        // Backend camera error — surface it to the UI instead of going to demo
+        if (data.error) {
+          console.error('[WS] Camera error from backend:', data.error)
+          setCameraError(data.error)
+          setSource('error')
           return
         }
 
-        // Log every 30th frame so console isn't flooded
+        frameCountRef.current += 1
+
+        // Clear the no-frame watchdog on every message that carries a frame,
+        // regardless of throttle position — prevents spurious demo fallback.
+        if (data.frame) {
+          clearTimeout(noFrameTimer.current)
+          noFrameTimer.current = null
+        }
+
+        // Apply EWA smoothing to landmarks on every frame (before throttle check)
+        if (data.landmarks) {
+          const smoothed = smoothLandmarks(data.landmarks, smoothedLandmarks.current, LANDMARK_SMOOTH_ALPHA)
+          smoothedLandmarks.current = smoothed
+          setLandmarks(smoothed)
+        }
+
+        // Throttle: only push canvas-heavy state every 3rd frame (~10 fps)
+        if (frameCountRef.current % 3 !== 0) return
+
         if (frameCountRef.current % 30 === 0) {
           console.log(`[WS] Frame #${frameCountRef.current}`, {
             hasFrame: !!data.frame,
@@ -205,12 +252,7 @@ export function useWebSocket() {
           })
         }
 
-        if (data.landmarks)        setLandmarks(data.landmarks)
-        if (data.frame) {
-          clearTimeout(noFrameTimer.current)
-          noFrameTimer.current = null
-          setCameraFrame(data.frame)
-        }
+        if (data.frame)            setCameraFrame(data.frame)
         if (data.mask)             setSegMask(data.mask)
         if (data.measurements)     setMeasurements(data.measurements)
         if (data.recommended_size) setRecommendedSize(data.recommended_size)
@@ -277,11 +319,22 @@ export function useWebSocket() {
     setConnected(false)
     setSource('disconnected')
     setLandmarks([])
+    smoothedLandmarks.current = []
     setCameraFrame(null)
     setSegMask(null)
     setMeasurements(null)
     setRecommendedSize(null)
   }, [stopDemo])
 
-  return { landmarks, cameraFrame, segMask, measurements, recommendedSize, connected, source, disconnect }
+  return {
+    landmarks,
+    cameraFrame,
+    segMask,
+    measurements,
+    recommendedSize,
+    connected,
+    source,
+    cameraError,
+    disconnect,
+  }
 }

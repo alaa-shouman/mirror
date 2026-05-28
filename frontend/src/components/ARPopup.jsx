@@ -27,7 +27,7 @@ const KEY_LM = [
   { idx: 16, label: 'R Wrist' },
 ]
 
-const TRYON_TIMEOUT_MS = Number(import.meta.env.VITE_TRYON_TIMEOUT_MS || 12000)
+const TRYON_TIMEOUT_MS = Number(import.meta.env.VITE_TRYON_TIMEOUT_MS || 120000)
 const TORSO_MASK_ENABLED = import.meta.env.VITE_ENABLE_TORSO_MASK === '1'
 
 function toDegrees(radians) {
@@ -251,7 +251,7 @@ function ARPopup({ product, onClose, onAddToCart }) {
   const {
     landmarks, cameraFrame, segMask,
     measurements, recommendedSize,
-    connected, source, disconnect,
+    connected, source, cameraError, disconnect,
   } = useWebSocket()
 
   // The "Best Fit" the UI will highlight. Prefer the user's self-reported
@@ -529,8 +529,35 @@ function ARPopup({ product, onClose, onAddToCart }) {
               <p className="ar-position-sub">Face the camera directly · Full body in frame</p>
             </div>
           )}
-          {!connected && <div className="ar-status"><span className="ar-status-dot" />Connecting to camera...</div>}
-          {connected && !cameraFrame && <div className="ar-status">Initializing pose detection...</div>}
+          {!connected && !cameraError && (
+            <div className="ar-status"><span className="ar-status-dot" />Connecting to camera...</div>
+          )}
+          {connected && !cameraFrame && !cameraError && (
+            <div className="ar-status">Initializing pose detection...</div>
+          )}
+          {cameraError && (
+            <div style={{
+              position: 'absolute', inset: 0, zIndex: 15,
+              display: 'flex', flexDirection: 'column',
+              alignItems: 'center', justifyContent: 'center',
+              background: 'rgba(0,0,0,0.82)', padding: 24, textAlign: 'center',
+            }}>
+              <div style={{ fontSize: 32, marginBottom: 12 }}>📷</div>
+              <div style={{ color: '#f87171', fontWeight: 700, fontSize: 15, marginBottom: 8 }}>
+                Camera not accessible
+              </div>
+              <div style={{ color: '#888', fontSize: 12, maxWidth: 320, marginBottom: 16 }}>
+                {cameraError}
+              </div>
+              <button
+                className="btn btn-secondary"
+                onClick={() => { window.location.reload() }}
+                style={{ fontSize: 12 }}
+              >
+                Retry
+              </button>
+            </div>
+          )}
         </div>
 
         {/* ── AR CONTROLS ──────────────────────────────────────── */}

@@ -11,6 +11,7 @@ class Product(Base):
     description = Column(String, default="")
     category = Column(String, default="")
     image = Column(String, default="")
+    garment_image = Column(String, default="")  # Flat-lay / garment-only image for AI try-on
     model_url = Column(String, default="")  # Path to GLB/GLTF 3D model
     sizes = Column(JSON, default=list)  # ["S", "M", "L", "XL"]
 

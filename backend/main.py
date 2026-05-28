@@ -1,12 +1,25 @@
+import sqlite3
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from routers import products, cart, vision, tryon
-from db.database import engine, Base, SessionLocal
+from db.database import engine, Base, SessionLocal, _DB_PATH
 from db.models import Product
 from db.seed import SAMPLE_PRODUCTS
 
 # Create database tables
 Base.metadata.create_all(bind=engine)
+
+
+def _migrate_schema():
+    """Add columns introduced after the initial schema without dropping existing data."""
+    with sqlite3.connect(str(_DB_PATH)) as conn:
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(products)")}
+        if "garment_image" not in existing:
+            conn.execute("ALTER TABLE products ADD COLUMN garment_image TEXT DEFAULT ''")
+            conn.commit()
+
+
+_migrate_schema()
 
 
 def seed_products_if_empty():

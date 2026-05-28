@@ -1,7 +1,35 @@
 const { app, BrowserWindow } = require('electron')
+const { spawn } = require('child_process')
 const path = require('path')
+const os = require('os')
 
 const isDev = process.argv.includes('--dev')
+
+let backendProcess = null
+
+function startBackend() {
+  const backendDir = path.join(__dirname, '..', 'backend')
+  const pythonBin = os.platform() === 'win32'
+    ? path.join(backendDir, 'venv', 'Scripts', 'python.exe')
+    : path.join(backendDir, 'venv', 'bin', 'python')
+
+  backendProcess = spawn(pythonBin, ['-m', 'uvicorn', 'main:app', '--port', '8000'], {
+    cwd: backendDir,
+    stdio: 'pipe',
+  })
+
+  backendProcess.stdout.on('data', (d) => console.log('[backend]', d.toString().trimEnd()))
+  backendProcess.stderr.on('data', (d) => console.error('[backend]', d.toString().trimEnd()))
+  backendProcess.on('error', (err) => console.error('[backend] Failed to start:', err.message))
+  backendProcess.on('exit', (code) => console.log('[backend] Exited with code', code))
+}
+
+function stopBackend() {
+  if (backendProcess) {
+    backendProcess.kill()
+    backendProcess = null
+  }
+}
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -19,15 +47,12 @@ function createWindow() {
   })
 
   if (isDev) {
-    // In development, load from Vite dev server
     win.loadURL('http://localhost:3000')
     win.webContents.openDevTools({ mode: 'detach' })
   } else {
-    // In production, load built files
     win.loadFile(path.join(__dirname, '..', 'frontend', 'dist', 'index.html'))
   }
 
-  // Hide cursor for mirror kiosk mode
   if (!isDev) {
     win.webContents.on('did-finish-load', () => {
       win.webContents.insertCSS('* { cursor: none !important; }')
@@ -35,8 +60,12 @@ function createWindow() {
   }
 }
 
-app.whenReady().then(createWindow)
+app.whenReady().then(() => {
+  if (!isDev) startBackend()
+  createWindow()
+})
 
 app.on('window-all-closed', () => {
+  stopBackend()
   app.quit()
 })

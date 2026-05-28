@@ -37,16 +37,8 @@ SPACE_ID = "WeShopAI/WeShopAI-Virtual-Try-On"
 
 
 def _hf_token() -> Optional[str]:
-    """HF_TOKEN from env, with a cross-project fallback for dev machines."""
-    tok = os.environ.get("HF_TOKEN")
-    if tok:
-        return tok
-    fallback = Path.home() / "Desktop" / "PRSNL" / "agency-console" / ".env"
-    if fallback.exists():
-        for line in fallback.read_text(encoding="utf-8").splitlines():
-            if line.startswith("HF_TOKEN="):
-                return line.split("=", 1)[1].strip().strip('"').strip("'")
-    return None
+    """HF_TOKEN from environment. Set it in backend/.env."""
+    return os.environ.get("HF_TOKEN") or None
 
 
 def _get_client() -> Client:
@@ -188,9 +180,10 @@ async def virtual_tryon(req: TryonRequest):
         product = db.query(Product).filter(Product.id == req.product_id).first()
         if not product:
             raise HTTPException(404, "product not found")
-        if not product.image:
+        # Prefer a dedicated flat-lay/garment-only image; fall back to the product photo
+        garment_url = product.garment_image or product.image
+        if not garment_url:
             raise HTTPException(400, "product has no reference image")
-        garment_url = product.image
         product_name = product.name
     finally:
         db.close()
