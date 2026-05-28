@@ -16,6 +16,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
+from urllib.request import urlopen
 
 from dotenv import load_dotenv
 from fastapi import APIRouter, HTTPException
@@ -54,7 +55,7 @@ def _get_client() -> Client:
         token = _hf_token()
         if not token:
             raise RuntimeError("HF_TOKEN not configured")
-        _client = Client(SPACE_ID, token=token, verbose=False)
+        _client = Client(SPACE_ID, hf_token=token, verbose=False)
     return _client
 
 
@@ -68,7 +69,7 @@ def _draw_rounded_rectangle(draw: ImageDraw.ImageDraw, box, radius: int, fill):
     draw.rounded_rectangle((left, top, right, bottom), radius=radius, fill=fill)
 
 
-def _build_demo_tryon(person_data_url: str, product_name: str, size: str | None = None) -> bytes:
+def _build_demo_tryon(person_data_url: str, product_name: str, size: Optional[str] = None) -> bytes:
     """Build a clearly labeled local preview when live AI try-on is unavailable."""
     image = _open_user_image(person_data_url)
     width, height = image.size
@@ -135,11 +136,37 @@ def _run_tryon_blocking(person_data_url: str, garment_url: str) -> bytes:
             background_image=handle_file(person_path),
             api_name="/generate_image",
         )
-        # gradio_client returns either a filepath string or a dict with {path,url,...}
+        # gradio_client may return a filepath, dict, list, or data URL depending on Space config.
+        result_path = None
+        if isinstance(result, (bytes, bytearray)):
+            return bytes(result)
         if isinstance(result, dict):
-            result_path = result.get("path") or result.get("url")
-        else:
+            result_path = result.get("path") or result.get("url") or result.get("data")
+        elif isinstance(result, (list, tuple)):
+            for item in result:
+                if isinstance(item, (bytes, bytearray)):
+                    return bytes(item)
+                if isinstance(item, dict):
+                    result_path = item.get("path") or item.get("url") or item.get("data")
+                    if result_path:
+                        break
+                if isinstance(item, str):
+                    result_path = item
+                    break
+        elif isinstance(result, str):
             result_path = result
+
+        if not result_path:
+            raise RuntimeError(f"Unexpected try-on result type: {type(result).__name__}")
+
+        if result_path.startswith("data:"):
+            _, b64_data = result_path.split(",", 1)
+            return base64.b64decode(b64_data)
+
+        if result_path.startswith("http://") or result_path.startswith("https://"):
+            with urlopen(result_path) as response:
+                return response.read()
+
         return Path(result_path).read_bytes()
     finally:
         try:
@@ -151,7 +178,7 @@ def _run_tryon_blocking(person_data_url: str, garment_url: str) -> bytes:
 class TryonRequest(BaseModel):
     user_image: str  # data URL (data:image/jpeg;base64,...)
     product_id: int
-    size: str | None = None
+    size: Optional[str] = None
 
 
 @router.post("/virtual-tryon")
@@ -183,7 +210,7 @@ async def virtual_tryon(req: TryonRequest):
         return demo_response("HF_TOKEN is not configured, so a local demo preview was generated.")
 
     t0 = time.time()
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     try:
         result_bytes = await loop.run_in_executor(
             _executor, _run_tryon_blocking, req.user_image, garment_url
@@ -194,7 +221,11 @@ async def virtual_tryon(req: TryonRequest):
         raise HTTPException(500, str(error))
     except Exception as error:
         if os.environ.get("DEMO_TRYON_FALLBACK", "1") != "0":
-            return demo_response(f"Live try-on failed: {type(error).__name__}.")
+            message = f"Live try-on failed: {type(error).__name__}"
+            details = str(error).strip()
+            if details:
+                message = f"{message}: {details[:200]}"
+            return demo_response(message + ".")
         raise HTTPException(502, f"try-on upstream failed: {type(error).__name__}: {str(error)[:200]}")
 
     duration_ms = int((time.time() - t0) * 1000)

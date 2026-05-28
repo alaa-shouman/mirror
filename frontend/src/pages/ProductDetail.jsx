@@ -4,6 +4,8 @@ import ARPopup from '../components/ARPopup'
 import ProductImage from '../components/ProductImage'
 import { findDemoProduct } from '../data/demoProducts'
 
+const PRODUCT_TIMEOUT_MS = 8000
+
 function ProductDetail({ addToCart }) {
   const { id } = useParams()
   const navigate = useNavigate()
@@ -14,7 +16,10 @@ function ProductDetail({ addToCart }) {
   const [demoMode, setDemoMode] = useState(false)
 
   useEffect(() => {
-    fetch(`/api/products/${id}`)
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), PRODUCT_TIMEOUT_MS)
+
+    fetch(`/api/products/${id}`, { signal: controller.signal })
       .then((res) => {
         if (!res.ok) throw new Error(`Product API returned ${res.status}`)
         return res.json()
@@ -32,6 +37,14 @@ function ProductDetail({ addToCart }) {
         setDemoMode(Boolean(fallbackProduct))
         setLoading(false)
       })
+      .finally(() => {
+        clearTimeout(timeoutId)
+      })
+
+    return () => {
+      clearTimeout(timeoutId)
+      controller.abort()
+    }
   }, [id])
 
   if (loading) return <div className="loading">Loading...</div>
